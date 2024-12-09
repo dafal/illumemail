@@ -1,0 +1,31 @@
+From: John Doe <john.doe@example.com>
+To: Jane Smith <jane.smith@example.com>
+Subject: Test Email for Illumemail
+Message-ID: <123456789@example.com>
+Date: Mon, 4 Dec 2023 10:30:00 +0000
+Content-Type: text/html; charset="UTF-8"
+
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            background-color: #f9f9f9;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        p {
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to Illumemail</h1>
+    <p>This is a test email to validate the functionality of the Illumemail service.</p>
+    <p>Best regards,</p>
+    <p><strong>John Doe</strong></p>
+</body>
+</html>

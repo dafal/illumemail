@@ -1,0 +1,20 @@
+{
+    "name": "illumemail",
+    "version": "1.0.0",
+    "description": "A service to convert .eml files to JPEG using mailparser and Puppeteer",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "dotenv": "^16.4.7",
+        "express": "^4.18.2",
+        "mailparser": "^3.6.2",
+        "multer": "^1.4.5-lts.1",
+        "puppeteer": "^22.0.0",
+        "sanitize-html": "^2.13.1",
+        "winston": "^3.17.0"
+    },
+    "author": "Eric Daras",
+    "license": "MIT"
+}
