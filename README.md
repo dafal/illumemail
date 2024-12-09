@@ -48,10 +48,12 @@ curl -X POST -F "eml_file=@example.eml" http://localhost:5000/convert --output o
 - On success, the service returns the rendered JPEG image as the response.
 - Metadata such as Message-ID, Subject, and From are included as HTTP response headers.
 **Environment Variables**
+
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | PORT | 5000 | Port on which the application runs. |
 |  |  |  |
+
 ## Development
 To run the application locally:
 1. Install dependencies:
