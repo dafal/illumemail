@@ -41,8 +41,21 @@ docker run -p 5000:5000 illumemail
 **Upload an .eml File**
 To convert an .eml file to a JPEG, send a POST request to the /convert endpoint with the .eml file as a multipart upload.
 **Example with curl:**
+Using multipart-form:
 ```bash
-curl -X POST -F "eml_file=@example.eml" http://localhost:5000/convert --output output.jpeg
+curl -X POST -F "eml_file=@sample.eml" http://localhost:5000/convert --output output.jpeg
+```
+
+Using api endpoint:
+```bash
+base64 sample.eml > encoded_file.txt
+curl -X POST http://localhost:5000/convert-api \
+-H "Content-Type: application/json" \
+-d @- <<EOF > output.jpeg
+{
+  "eml_content": "$(cat encoded_file.txt)"
+}
+EOF
 ```
 **Response**
 - On success, the service returns the rendered JPEG image as the response.
@@ -52,6 +65,7 @@ curl -X POST -F "eml_file=@example.eml" http://localhost:5000/convert --output o
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | PORT | 5000 | Port on which the application runs. |
+| MAX_FILE_SIZE_MB | 20 | Maximum file size |
 |  |  |  |
 
 ## Development
