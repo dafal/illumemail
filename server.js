@@ -6,6 +6,7 @@ const path = require('path');
 const { simpleParser } = require('mailparser');
 const puppeteer = require('puppeteer');
 const winston = require('winston');
+const stream = require('stream');
 
 const app = express();
 
@@ -18,10 +19,17 @@ const logger = winston.createLogger({
     ],
 });
 
+// Enable JSON payload parsing for API-like endpoint
+app.use(express.json({ limit: '50mb' })); // Allow large JSON payloads
+
+// Get maximum file size from environment variable or default to 20 MB
+const MAX_FILE_SIZE_MB = process.env.MAX_FILE_SIZE_MB || 20;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB limit
+    limits: { fileSize: MAX_FILE_SIZE_BYTES }, // Dynamic file size limit
 });
 
 // Puppeteer setup
@@ -100,36 +108,22 @@ function generateEmailHtml(parsedEmail) {
 // Function to sanitize header values for HTTP headers
 function sanitizeHeaderValue(value) {
     if (!value) return '';
-    // Remove control characters, line breaks, and non-printable characters
     value = value.replace(/[\r\n\x00-\x1F\x7F]+/g, ' ').trim();
-
-    // Replace non-ASCII characters with a placeholder or remove
     value = value.replace(/[^\x20-\x7E]/g, '');
-
-    // Truncate to a reasonable length (e.g., 255 characters for safety)
     if (value.length > 255) {
         value = value.substring(0, 255) + '...';
     }
-
     return value;
 }
 
-// Endpoint to handle .eml file uploads and convert to JPEG
-app.post('/convert', upload.single('eml_file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).send('No file uploaded.');
-    }
-
-    const inputFilePath = path.resolve(req.file.path);
-    const outputFilePath = `${inputFilePath}.jpeg`;
-
+// Helper function to process email content
+async function processEmailContent(emailContent, res) {
     try {
-        // Validate the file contents by attempting to parse it
-        const parsedEmail = await simpleParser(fs.createReadStream(inputFilePath));
+        // Parse the email content
+        const parsedEmail = await simpleParser(emailContent);
 
-        // Ensure the parsed email contains expected fields
         if (!parsedEmail.text && !parsedEmail.html) {
-            throw new Error('The uploaded file is not a valid .eml file.');
+            throw new Error('The provided content is not a valid .eml file.');
         }
 
         // Generate HTML from the email content
@@ -139,7 +133,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 1024, height: 768 });
         await page.setContent(emailHtml, { waitUntil: 'networkidle0', timeout: 60000 });
-        await page.screenshot({ path: outputFilePath, type: 'jpeg', fullPage: true });
+        const screenshotBuffer = await page.screenshot({ type: 'jpeg', fullPage: true });
         await page.close();
 
         // Extract message ID and log success
@@ -151,29 +145,49 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
         res.setHeader('X-Email-From', sanitizeHeaderValue(parsedEmail.from?.text));
         res.setHeader('X-Message-ID', sanitizeHeaderValue(messageId));
 
-        // Send the JPEG file as the response
-        res.sendFile(outputFilePath, async (err) => {
-            if (err) {
-                logger.error('Error sending file:', err);
-                res.status(500).send('Error sending file.');
-            }
-
-            // Clean up temporary files
-            await fs.promises.unlink(inputFilePath);
-            await fs.promises.unlink(outputFilePath);
-        });
+        // Send the JPEG as the response
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.send(screenshotBuffer);
     } catch (err) {
-        logger.error('Error processing file:', err.message);
+        logger.error('Error processing email content:', err.message);
+        res.status(400).send({ error: err.message });
+    }
+}
 
-        // Respond with appropriate error if the file isn't a valid .eml
-        if (err.message === 'The uploaded file is not a valid .eml file.') {
-            res.status(400).send('Invalid .eml file. Please upload a valid .eml file.');
-        } else {
-            res.status(500).send('Error processing file.');
-        }
-
-        // Clean up the uploaded file if validation fails
+// Endpoint to handle .eml file uploads and convert to JPEG
+app.post('/convert', upload.single('eml_file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).send('No file uploaded.');
+    }
+    const inputFilePath = path.resolve(req.file.path);
+    try {
+        const emailContent = fs.createReadStream(inputFilePath);
+        await processEmailContent(emailContent, res);
+    } finally {
+        // Clean up uploaded file
         await fs.promises.unlink(inputFilePath);
+    }
+});
+
+// New endpoint to handle JSON API-like requests with base64-encoded content
+app.post('/convert-api', async (req, res) => {
+    const { eml_content } = req.body;
+    if (!eml_content) {
+        return res.status(400).send({ error: 'No .eml content provided.' });
+    }
+
+    try {
+        // Decode base64-encoded content
+        const decodedContent = Buffer.from(eml_content, 'base64');
+
+        // Convert the decoded content to a readable stream
+        const emailContentStream = new stream.PassThrough();
+        emailContentStream.end(decodedContent);
+
+        await processEmailContent(emailContentStream, res);
+    } catch (err) {
+        logger.error('Error decoding base64 content:', err.message);
+        res.status(400).send({ error: 'Invalid base64-encoded content.' });
     }
 });
 
