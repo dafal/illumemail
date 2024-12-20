@@ -67,6 +67,7 @@ function generateEmailHtml(parsedEmail) {
     return `
         <html>
         <head>
+            <meta charset="UTF-8">
             <style>
                 body { 
                     font-family: Arial, sans-serif; 
@@ -131,7 +132,7 @@ async function processEmailContent(emailContent, res) {
 
         // Render HTML and take a screenshot
         const page = await browser.newPage();
-        await page.setViewport({ width: 1024, height: 768 });
+        await page.setViewport({ width: 1024, height: 0 }); // Restrict width to 1024px, height auto
         await page.setContent(emailHtml, { waitUntil: 'networkidle0', timeout: 60000 });
         const screenshotBuffer = await page.screenshot({ type: 'jpeg', fullPage: true });
         await page.close();

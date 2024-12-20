@@ -1,7 +1,7 @@
 # Use Node.js base image
 FROM node:22-slim
 
-# Install Puppeteer dependencies
+# Install Puppeteer dependencies and necessary fonts
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libxss1 \
@@ -9,11 +9,12 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     libappindicator3-1 \
     xdg-utils \
-    libgbm1
-
-RUN apt-get update && apt-get install -y \
+    libgbm1 \
     dbus \
     libdbus-1-dev \
+    fonts-dejavu \
+    fonts-noto \
+    fonts-wqy-zenhei \
     && apt-get clean
 
 # Create app directory
