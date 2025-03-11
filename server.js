@@ -94,8 +94,8 @@ function generateEmailHtml(parsedEmail) {
         <body>
             <div class="header">
                 <div><strong>Message ID:</strong> ${messageId}</div>
-                <div><strong>From:</strong> ${from}</div>
-                <div><strong>To:</strong> ${to}</div>
+                <div><strong>From:</strong> ${from} <span class="email-address">(${parsedEmail.from?.value[0]?.address || 'Unknown'})</span></div>
+                <div><strong>To:</strong> ${to} <span class="email-address">(${parsedEmail.to?.value[0]?.address || 'Unknown'})</span></div>
                 <div><strong>Subject:</strong> ${subject}</div>
             </div>
             <div class="content">
