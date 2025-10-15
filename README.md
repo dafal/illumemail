@@ -65,8 +65,9 @@ EOF
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
 | PORT | 5000 | Port on which the application runs. |
-| MAX_FILE_SIZE_MB | 20 | Maximum file size |
-|  |  |  |
+| MAX_FILE_SIZE_MB | 20 | Maximum file size (in MB) for uploaded .eml files. |
+| LOG_LEVEL | info | Logging verbosity level: `error`, `warn`, `info`, `debug`. |
+| LOG_FORMAT | json | Log output format: `json` (structured), `pretty` (colorized with metadata), `simple` (minimal). |
 
 ## Development
 To run the application locally:
@@ -79,6 +80,58 @@ npm install
 node server.js
 ```
 3. Access the service at http://localhost:5000.
+
+### Debug and Logging
+Illumemail includes comprehensive logging capabilities to help troubleshoot issues and monitor performance:
+
+**Log Levels:**
+- `error` - Only critical errors
+- `warn` - Warnings and errors
+- `info` - General information (default) - includes request summaries and completion status
+- `debug` - Detailed debugging information including:
+  - Email parsing details (metadata extraction)
+  - HTML generation steps
+  - Puppeteer operations (page creation, rendering, screenshots)
+  - Performance timing for each stage
+  - File cleanup operations
+
+**Log Formats:**
+- `json` (default) - Structured JSON format, ideal for log aggregation tools
+- `pretty` - Colorized output with metadata, best for development
+- `simple` - Minimal console output, easiest to read
+
+**Usage Examples:**
+
+Enable debug logging with pretty format during development:
+```bash
+LOG_LEVEL=debug LOG_FORMAT=pretty node server.js
+```
+
+Production logging with structured JSON:
+```bash
+LOG_LEVEL=info LOG_FORMAT=json node server.js
+```
+
+Using Docker with debug logging:
+```bash
+docker run -p 5000:5000 -e LOG_LEVEL=debug -e LOG_FORMAT=pretty illumemail
+```
+
+**What Gets Logged:**
+
+At `info` level:
+- Server startup configuration
+- Incoming requests (file size, endpoint)
+- Processing completion with timing breakdown
+- Error messages
+
+At `debug` level (everything above plus):
+- Email parsing progress and extracted metadata
+- HTML generation details (content type, lengths)
+- Puppeteer step-by-step operations
+- Screenshot capture details
+- File cleanup operations
+- Performance timing for each pipeline stage
 
 ## Docker Compose (Optional)
 Create a docker-compose.yml file to simplify deployment:
