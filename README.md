@@ -66,6 +66,7 @@ EOF
 | -------- | ------- | ----------- |
 | PORT | 5000 | Port on which the application runs. |
 | MAX_FILE_SIZE_MB | 20 | Maximum file size (in MB) for uploaded .eml files. |
+| MAX_SCREENSHOT_HEIGHT | 15000 | Maximum height (in pixels) for generated screenshots. Prevents memory issues with very long emails. |
 | LOG_LEVEL | info | Logging verbosity level: `error`, `warn`, `info`, `debug`. |
 | LOG_FORMAT | json | Log output format: `json` (structured), `pretty` (colorized with metadata), `simple` (minimal). |
 
@@ -125,13 +126,23 @@ At `info` level:
 - Processing completion with timing breakdown
 - Error messages
 
+At `warn` level (warnings):
+- Screenshot height truncation (when emails exceed MAX_SCREENSHOT_HEIGHT)
+
 At `debug` level (everything above plus):
 - Email parsing progress and extracted metadata
 - HTML generation details (content type, lengths)
+- Page dimensions (width/height)
 - Puppeteer step-by-step operations
 - Screenshot capture details
 - File cleanup operations
 - Performance timing for each pipeline stage
+
+**Response Headers:**
+When a screenshot is truncated due to height limit, the following headers are included:
+- `X-Screenshot-Height-Truncated: true`
+- `X-Actual-Page-Height: [pixels]` - The actual email height
+- `X-Captured-Height: [pixels]` - The maximum captured height
 
 ## Docker Compose (Optional)
 Create a docker-compose.yml file to simplify deployment:

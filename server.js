@@ -86,6 +86,9 @@ app.use(express.json({ limit: '50mb' })); // Allow large JSON payloads
 const MAX_FILE_SIZE_MB = process.env.MAX_FILE_SIZE_MB || 20;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
+// Get maximum screenshot height to prevent massive images (in pixels)
+const MAX_SCREENSHOT_HEIGHT = parseInt(process.env.MAX_SCREENSHOT_HEIGHT || '15000', 10);
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
@@ -232,13 +235,54 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         logger.debug('Loading HTML content into page');
         await page.setContent(emailHtml, { waitUntil: 'networkidle0', timeout: 60000 });
 
-        logger.debug('Taking screenshot');
-        const screenshotBuffer = await page.screenshot({ type: 'jpeg', fullPage: true });
+        // Get actual page dimensions
+        const dimensions = await page.evaluate(() => {
+            return {
+                width: document.documentElement.scrollWidth,
+                height: document.documentElement.scrollHeight
+            };
+        });
+
+        logger.debug('Page dimensions detected', {
+            width: dimensions.width,
+            height: dimensions.height,
+            maxHeight: MAX_SCREENSHOT_HEIGHT
+        });
+
+        // Check if page height exceeds maximum
+        let screenshotBuffer;
+        let heightTruncated = false;
+
+        if (dimensions.height > MAX_SCREENSHOT_HEIGHT) {
+            logger.warn('Page height exceeds maximum, screenshot will be truncated', {
+                actualHeight: dimensions.height,
+                maxHeight: MAX_SCREENSHOT_HEIGHT,
+                messageId
+            });
+
+            logger.debug('Taking truncated screenshot');
+            screenshotBuffer = await page.screenshot({
+                type: 'jpeg',
+                clip: {
+                    x: 0,
+                    y: 0,
+                    width: dimensions.width,
+                    height: MAX_SCREENSHOT_HEIGHT
+                }
+            });
+            heightTruncated = true;
+        } else {
+            logger.debug('Taking full page screenshot');
+            screenshotBuffer = await page.screenshot({ type: 'jpeg', fullPage: true });
+        }
+
         stageTimings.rendering = renderTimer.elapsed();
 
         logger.debug('Screenshot captured', {
             screenshotSize: screenshotBuffer.length,
-            duration_ms: stageTimings.rendering
+            duration_ms: stageTimings.rendering,
+            heightTruncated,
+            capturedHeight: heightTruncated ? MAX_SCREENSHOT_HEIGHT : dimensions.height
         });
 
         await page.close();
@@ -252,6 +296,8 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
             messageId,
             timings: stageTimings,
             screenshotSize: screenshotBuffer.length,
+            heightTruncated,
+            pageHeight: dimensions.height,
             ...requestMetadata
         });
 
@@ -259,6 +305,11 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         res.setHeader('X-Email-Subject', sanitizeHeaderValue(parsedEmail.subject));
         res.setHeader('X-Email-From', sanitizeHeaderValue(parsedEmail.from?.text));
         res.setHeader('X-Message-ID', sanitizeHeaderValue(messageId));
+        res.setHeader('X-Screenshot-Height-Truncated', heightTruncated ? 'true' : 'false');
+        if (heightTruncated) {
+            res.setHeader('X-Actual-Page-Height', dimensions.height.toString());
+            res.setHeader('X-Captured-Height', MAX_SCREENSHOT_HEIGHT.toString());
+        }
 
         // Send the JPEG as the response
         res.setHeader('Content-Type', 'image/jpeg');
@@ -349,6 +400,7 @@ app.listen(PORT, () => {
     logger.info('Server started successfully', {
         port: PORT,
         maxFileSizeMB: MAX_FILE_SIZE_MB,
+        maxScreenshotHeight: MAX_SCREENSHOT_HEIGHT,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
         endpoints: ['/convert', '/convert-api']
