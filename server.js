@@ -394,6 +394,11 @@ app.post('/convert-api', async (req, res) => {
     }
 });
 
+// Ping endpoint
+app.get('/ping', (req, res) => {
+    res.send('pong');
+});
+
 // Server startup
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -403,6 +408,6 @@ app.listen(PORT, () => {
         maxScreenshotHeight: MAX_SCREENSHOT_HEIGHT,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
-        endpoints: ['/convert', '/convert-api']
+        endpoints: ['/convert', '/convert-api', '/ping']
     });
 });
