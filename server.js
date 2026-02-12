@@ -134,10 +134,17 @@ function generateEmailHtml(parsedEmail) {
         <head>
             <meta charset="UTF-8">
             <style>
-                body { 
-                    font-family: Arial, sans-serif; 
-                    line-height: 1.5; 
-                    margin: 20px; 
+                body {
+                    font-family: Arial, sans-serif;
+                    line-height: 1.5;
+                    margin: 20px;
+                    overflow-wrap: break-word;
+                    word-break: break-word;
+                }
+                pre {
+                    white-space: pre-wrap;
+                    overflow-wrap: break-word;
+                    word-break: break-word;
                 }
                 .header {
                     margin-bottom: 20px;
@@ -235,10 +242,10 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         logger.debug('Loading HTML content into page');
         await page.setContent(emailHtml, { waitUntil: 'networkidle0', timeout: 60000 });
 
-        // Get actual page dimensions
+        // Get actual page dimensions, capping width to viewport
         const dimensions = await page.evaluate(() => {
             return {
-                width: document.documentElement.scrollWidth,
+                width: Math.min(document.documentElement.scrollWidth, 1024),
                 height: document.documentElement.scrollHeight
             };
         });
