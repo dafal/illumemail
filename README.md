@@ -69,6 +69,7 @@ EOF
 | MAX_SCREENSHOT_HEIGHT | 15000 | Maximum height (in pixels) for generated screenshots. Prevents memory issues with very long emails. |
 | LOG_LEVEL | info | Logging verbosity level: `error`, `warn`, `info`, `debug`. |
 | LOG_FORMAT | json | Log output format: `json` (structured), `pretty` (colorized with metadata), `simple` (minimal). |
+| OFFLINE_MODE | 0 | When set to `1`, blocks all outgoing network requests during rendering (remote images, fonts, tracking pixels, etc. will not be loaded). |
 
 ## Development
 To run the application locally:

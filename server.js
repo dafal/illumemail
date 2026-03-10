@@ -89,6 +89,9 @@ const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 // Get maximum screenshot height to prevent massive images (in pixels)
 const MAX_SCREENSHOT_HEIGHT = parseInt(process.env.MAX_SCREENSHOT_HEIGHT || '15000', 10);
 
+// Offline mode: when enabled, block all outgoing network requests (remote images, fonts, etc.)
+const OFFLINE_MODE = process.env.OFFLINE_MODE === '1';
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
@@ -239,8 +242,23 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         logger.debug('Setting viewport', { width: 1024, height: 0 });
         await page.setViewport({ width: 1024, height: 0 });
 
+        // In offline mode, block all outgoing network requests
+        if (OFFLINE_MODE) {
+            await page.setRequestInterception(true);
+            page.on('request', (request) => {
+                const url = request.url();
+                // Allow data URIs and inline content, block everything else
+                if (url.startsWith('data:')) {
+                    request.continue();
+                } else {
+                    logger.debug('Blocked outgoing request (offline mode)', { url });
+                    request.abort('blockedbyclient');
+                }
+            });
+        }
+
         logger.debug('Loading HTML content into page');
-        await page.setContent(emailHtml, { waitUntil: 'networkidle0', timeout: 60000 });
+        await page.setContent(emailHtml, { waitUntil: OFFLINE_MODE ? 'load' : 'networkidle0', timeout: 60000 });
 
         // Get actual page dimensions, capping width to viewport
         const dimensions = await page.evaluate(() => {
@@ -413,6 +431,7 @@ app.listen(PORT, () => {
         port: PORT,
         maxFileSizeMB: MAX_FILE_SIZE_MB,
         maxScreenshotHeight: MAX_SCREENSHOT_HEIGHT,
+        offlineMode: OFFLINE_MODE,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
         endpoints: ['/convert', '/convert-api', '/ping']
