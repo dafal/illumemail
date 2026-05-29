@@ -4,6 +4,10 @@ services:
     ports:
       - "5000:5000"
     restart: unless-stopped
+    # Chrome stores shared memory in /dev/shm and crashes when it fills.
+    # Docker's default is 64MB; give it room so rendering stays on fast
+    # RAM-backed shm. A plain `docker run` needs the equivalent --shm-size=1g.
+    shm_size: "1gb"
     # Marks the container unhealthy when Puppeteer is down (/health -> 503).
     # The autoheal sidecar below watches this and restarts the container.
     healthcheck:

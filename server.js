@@ -99,14 +99,17 @@ const upload = multer({
 });
 
 // Puppeteer setup
+// Note: Chrome uses /dev/shm for shared memory and crashes ("Connection
+// closed") when it runs out. Docker defaults /dev/shm to 64MB, so the
+// container must be given a larger one (compose: shm_size; docker run:
+// --shm-size=1g). We deliberately keep Chrome on the fast RAM-backed /dev/shm
+// rather than passing --disable-dev-shm-usage, which would route shared memory
+// to disk-backed /tmp and slow rendering. getBrowser() relaunches the browser
+// if it ever does crash, so an undersized /dev/shm degrades instead of wedging.
 const PUPPETEER_LAUNCH_OPTIONS = {
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        // Chrome writes shared memory to /dev/shm, which defaults to 64MB in
-        // Docker. Exhausting it crashes the browser ("Connection closed"); this
-        // routes shared memory to /tmp instead.
-        '--disable-dev-shm-usage',
     ],
 };
 

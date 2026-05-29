@@ -37,5 +37,9 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["node", "healthcheck.js"]
 
+# Chrome stores shared memory in /dev/shm and crashes ("Connection closed")
+# when it fills. Docker defaults /dev/shm to 64MB, which is too small under
+# load. docker-compose.yml sets shm_size; for a plain docker run pass:
+#   docker run --shm-size=1g ...
 # Run the app
 CMD ["node", "server.js"]

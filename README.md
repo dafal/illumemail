@@ -34,8 +34,12 @@ docker build -t illumemail .
 ```
 3. Run the Docker container:
 ```bash
-docker run -p 5000:5000 illumemail
+docker run -p 5000:5000 --shm-size=1g illumemail
 ```
+> **Note:** `--shm-size=1g` is important. Chrome stores shared memory in
+> `/dev/shm`, which Docker defaults to 64MB — too small for rendering and a
+> common cause of `Protocol error: Connection closed` crashes. The bundled
+> `docker-compose.yml` sets this for you via `shm_size`.
 
 ### Usage
 **Upload an .eml File**
@@ -145,23 +149,21 @@ When a screenshot is truncated due to height limit, the following headers are in
 - `X-Actual-Page-Height: [pixels]` - The actual email height
 - `X-Captured-Height: [pixels]` - The maximum captured height
 
-## Docker Compose (Optional)
-Create a docker-compose.yml file to simplify deployment:
-```yaml
-version: '3.8'
-
-services:
-  illumemail:
-    image: illumemail
-    ports:
-      - "5001:5000"
-    volumes:
-      - ./uploads:/usr/src/app/uploads
-```
-Start the application:
+## Docker Compose
+A `docker-compose.yml` is included. Start the application with:
 ```bash
-docker-compose up
+docker compose up --build
 ```
+The compose file sets a few things that matter for stability:
+
+- **`shm_size: "1gb"`** — gives Chrome a large RAM-backed `/dev/shm` so
+  rendering stays fast and avoids the 64MB-default `Connection closed` crash.
+- **`healthcheck`** — runs `healthcheck.js`, which probes `/health` and reports
+  the container unhealthy when Puppeteer is down.
+- **`autoheal` sidecar** — restarts the container when it goes unhealthy. A bare
+  healthcheck only *marks* a container unhealthy; on standalone Docker/Compose
+  something has to act on it. Remove the sidecar under Swarm/Kubernetes, which
+  restart on failing health/liveness checks natively.
 
 
 ## Known Limitations
