@@ -1,0 +1,28 @@
+services:
+  illumemail:
+    build: .
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    # Marks the container unhealthy when Puppeteer is down (/health -> 503).
+    # The autoheal sidecar below watches this and restarts the container.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORT||5000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      - autoheal=true
+
+  # A plain HEALTHCHECK only marks a container unhealthy; it does not restart it.
+  # This sidecar restarts any container labeled autoheal=true once it goes
+  # unhealthy. Remove it if you run under Swarm/Kubernetes, which restart on
+  # failing health/liveness checks natively.
+  autoheal:
+    image: willfarrell/autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
