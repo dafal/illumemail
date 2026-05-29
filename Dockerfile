@@ -25,7 +25,7 @@ COPY package.json .
 RUN npm install
 
 # Bundle app source
-COPY server.js .
+COPY server.js healthcheck.js ./
 
 # Expose the port the app runs on
 EXPOSE 5000
@@ -35,7 +35,7 @@ EXPOSE 5000
 # start-period gives the browser time to launch; retries avoids flapping on a
 # transient disconnect that self-heals on the next request.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||5000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+    CMD ["node", "healthcheck.js"]
 
 # Run the app
 CMD ["node", "server.js"]
