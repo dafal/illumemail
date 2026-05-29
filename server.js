@@ -99,15 +99,62 @@ const upload = multer({
 });
 
 // Puppeteer setup
+// Note: Chrome uses /dev/shm for shared memory and crashes ("Connection
+// closed") when it runs out. Docker defaults /dev/shm to 64MB, so the
+// container must be given a larger one (compose: shm_size; docker run:
+// --shm-size=1g). We deliberately keep Chrome on the fast RAM-backed /dev/shm
+// rather than passing --disable-dev-shm-usage, which would route shared memory
+// to disk-backed /tmp and slow rendering. getBrowser() relaunches the browser
+// if it ever does crash, so an undersized /dev/shm degrades instead of wedging.
+const PUPPETEER_LAUNCH_OPTIONS = {
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+    ],
+};
+
 let browser;
-(async () => {
+let browserLaunchPromise;
+
+async function launchBrowser() {
     const timer = createTimer();
     logger.debug('Launching Puppeteer browser');
-    browser = await puppeteer.launch({
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    const instance = await puppeteer.launch(PUPPETEER_LAUNCH_OPTIONS);
+    // If the browser process dies, drop the stale handle so the next request
+    // relaunches it instead of failing forever with "Connection closed".
+    instance.on('disconnected', () => {
+        logger.error('Puppeteer browser disconnected; will relaunch on next request');
+        browser = undefined;
+        browserLaunchPromise = undefined;
     });
     logger.info('Puppeteer browser launched', { duration_ms: timer.elapsed() });
-})();
+    return instance;
+}
+
+// Returns a connected browser, launching (or relaunching) one if needed. The
+// in-flight promise is shared so concurrent requests don't launch duplicates.
+async function getBrowser() {
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
+    if (!browserLaunchPromise) {
+        browserLaunchPromise = launchBrowser()
+            .then((instance) => {
+                browser = instance;
+                return instance;
+            })
+            .catch((err) => {
+                browserLaunchPromise = undefined;
+                throw err;
+            });
+    }
+    return browserLaunchPromise;
+}
+
+// Launch eagerly at startup so the first request doesn't pay the launch cost.
+getBrowser().catch((err) => {
+    logger.error('Initial Puppeteer browser launch failed', { error: err.message });
+});
 
 process.on('SIGINT', async () => {
     if (browser) await browser.close();
@@ -237,7 +284,8 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         // Render HTML and take a screenshot
         const renderTimer = createTimer();
         logger.debug('Creating Puppeteer page');
-        const page = await browser.newPage();
+        const browserInstance = await getBrowser();
+        const page = await browserInstance.newPage();
 
         logger.debug('Setting viewport', { width: 1024, height: 0 });
         await page.setViewport({ width: 1024, height: 0 });
@@ -424,6 +472,17 @@ app.get('/ping', (req, res) => {
     res.send('pong');
 });
 
+// Health check endpoint: reports unhealthy if the browser isn't connected so
+// the container orchestrator (Docker HEALTHCHECK) can restart the service.
+app.get('/health', (req, res) => {
+    const browserConnected = !!(browser && browser.isConnected());
+    if (browserConnected) {
+        return res.json({ status: 'ok', browser: 'connected' });
+    }
+    logger.warn('Health check failed: browser not connected');
+    res.status(503).json({ status: 'unhealthy', browser: 'disconnected' });
+});
+
 // Server startup
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -434,6 +493,6 @@ app.listen(PORT, () => {
         offlineMode: OFFLINE_MODE,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
-        endpoints: ['/convert', '/convert-api', '/ping']
+        endpoints: ['/convert', '/convert-api', '/ping', '/health']
     });
 });

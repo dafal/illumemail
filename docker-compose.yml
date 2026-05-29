@@ -1,0 +1,32 @@
+services:
+  illumemail:
+    build: .
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    # Chrome stores shared memory in /dev/shm and crashes when it fills.
+    # Docker's default is 64MB; give it room so rendering stays on fast
+    # RAM-backed shm. A plain `docker run` needs the equivalent --shm-size=1g.
+    shm_size: "1gb"
+    # Marks the container unhealthy when Puppeteer is down (/health -> 503).
+    # The autoheal sidecar below watches this and restarts the container.
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      - autoheal=true
+
+  # A plain HEALTHCHECK only marks a container unhealthy; it does not restart it.
+  # This sidecar restarts any container labeled autoheal=true once it goes
+  # unhealthy. Remove it if you run under Swarm/Kubernetes, which restart on
+  # failing health/liveness checks natively.
+  autoheal:
+    image: willfarrell/autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
