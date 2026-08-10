@@ -8,6 +8,7 @@ Illumemail is a lightweight Node.js-based service that converts `.eml` email fil
 
 - Parse and render `.eml` files into visually accurate JPEG images.
 - Includes essential email metadata such as `Message-ID`, `From`, `To`, and `Subject` in the rendered image.
+- Renders an Outlook-style attachment strip above the message body, showing each attachment's file-type icon, name, size, and declared MIME type (no file contents are previewed). Attachments referenced inline from the HTML body are listed too, tagged `inline`.
 - Fully Dockerized for easy deployment.
 - Security-focused, running as a non-root user inside the container.
 

@@ -171,6 +171,93 @@ function escapeHtml(unsafe) {
         .replace(/'/g, "&#039;");
 }
 
+// Human readable file size, matching the units Outlook shows in its
+// attachment strip (KB for anything above a kilobyte).
+function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// Icon colour per file family, loosely following the Office/OneDrive palette so
+// an analyst can recognise the attachment type at a glance. Executable and
+// script types get the alert red.
+const ATTACHMENT_COLORS = [
+    { color: '#d13438', extensions: ['pdf'] },
+    { color: '#2b579a', extensions: ['doc', 'docx', 'docm', 'dot', 'dotx', 'odt', 'rtf'] },
+    { color: '#217346', extensions: ['xls', 'xlsx', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv'] },
+    { color: '#d24726', extensions: ['ppt', 'pptx', 'pptm', 'odp'] },
+    { color: '#0078d4', extensions: ['eml', 'msg', 'ics', 'vcf'] },
+    { color: '#8764b8', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'webp', 'svg', 'heic'] },
+    { color: '#c19c00', extensions: ['zip', 'rar', '7z', 'gz', 'tar', 'bz2', 'xz', 'cab', 'iso'] },
+    { color: '#e37933', extensions: ['htm', 'html', 'xml', 'json'] },
+    { color: '#a80000', extensions: ['exe', 'dll', 'bat', 'cmd', 'com', 'scr', 'ps1', 'vbs', 'js', 'jse', 'wsf', 'hta', 'jar', 'msi', 'lnk', 'iqy', 'reg'] },
+];
+
+const DEFAULT_ATTACHMENT_COLOR = '#5d5d5d';
+
+function getAttachmentExtension(filename) {
+    const match = /\.([A-Za-z0-9]{1,8})$/.exec(filename || '');
+    return match ? match[1].toLowerCase() : '';
+}
+
+function getAttachmentColor(extension) {
+    const entry = ATTACHMENT_COLORS.find((e) => e.extensions.includes(extension));
+    return entry ? entry.color : DEFAULT_ATTACHMENT_COLOR;
+}
+
+// Inline SVG (no network access needed, so this also works in OFFLINE_MODE): a
+// page with a folded corner and the extension printed across the bottom band.
+function renderAttachmentIcon(extension) {
+    const color = getAttachmentColor(extension);
+    const label = escapeHtml((extension || '?').substring(0, 4).toUpperCase());
+    // Shrink the label as it gets longer so 4 characters still fit the band.
+    const fontSize = label.length >= 4 ? 7 : label.length === 3 ? 8 : 9;
+    return `
+        <svg class="attachment-icon" width="28" height="34" viewBox="0 0 28 34" aria-hidden="true">
+            <path d="M2 2h16l8 8v22a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" fill="#ffffff" stroke="#c8c6c4" stroke-width="1"/>
+            <path d="M18 2l8 8h-8z" fill="#e6e6e6" stroke="#c8c6c4" stroke-width="1"/>
+            <rect x="1" y="20" width="26" height="11" rx="1.5" fill="${color}"/>
+            <text x="14" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="#ffffff">${label}</text>
+        </svg>
+    `;
+}
+
+// Outlook-style attachment strip. Attachments referenced from the HTML body
+// (inline images) are still listed but tagged, so nothing in the message is
+// hidden from the analyst.
+function renderAttachments(parsedEmail) {
+    const attachments = parsedEmail.attachments || [];
+    if (attachments.length === 0) return '';
+
+    const items = attachments.map((attachment) => {
+        const filename = attachment.filename || 'unnamed attachment';
+        const extension = getAttachmentExtension(attachment.filename);
+        const size = formatFileSize(attachment.size);
+        const isInline = attachment.related === true || attachment.contentDisposition === 'inline';
+
+        return `
+            <div class="attachment">
+                ${renderAttachmentIcon(extension)}
+                <div class="attachment-text">
+                    <div class="attachment-name">${escapeHtml(filename)}${isInline ? '<span class="attachment-tag">inline</span>' : ''}</div>
+                    ${size ? `<div class="attachment-size">${escapeHtml(size)}</div>` : ''}
+                    ${attachment.contentType ? `<div class="attachment-type">${escapeHtml(attachment.contentType)}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="attachments">
+            <div class="attachments-title">Attachments (${attachments.length})</div>
+            <div class="attachment-list">${items}</div>
+        </div>
+    `;
+}
+
 // Function to generate HTML from email content
 function generateEmailHtml(parsedEmail) {
     const messageId = escapeHtml(parsedEmail.messageId || 'Unknown');
@@ -206,10 +293,67 @@ function generateEmailHtml(parsedEmail) {
                 .header div { 
                     margin: 5px 0; 
                 }
-                .content { 
-                    padding-top: 20px; 
-                    border-top: 1px solid #ddd; 
-                    margin-top: 20px; 
+                .content {
+                    padding-top: 20px;
+                    border-top: 1px solid #ddd;
+                    margin-top: 20px;
+                }
+                .attachments {
+                    margin-top: 12px;
+                }
+                .attachments-title {
+                    font-size: 12px;
+                    font-weight: bold;
+                    color: #605e5c;
+                    text-transform: uppercase;
+                    letter-spacing: 0.4px;
+                    margin-bottom: 6px;
+                }
+                .attachment-list {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, 232px);
+                    gap: 8px;
+                }
+                .attachment {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 6px 10px 6px 6px;
+                    background-color: #fff;
+                    border: 1px solid #ddd;
+                    border-radius: 3px;
+                }
+                .attachment-icon {
+                    flex: none;
+                }
+                .attachment-text {
+                    min-width: 0;
+                    line-height: 1.3;
+                }
+                .attachment-name {
+                    font-size: 13px;
+                    color: #201f1e;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
+                }
+                .attachment-size {
+                    font-size: 11px;
+                    color: #605e5c;
+                }
+                .attachment-type {
+                    font-size: 10px;
+                    color: #8a8886;
+                    overflow-wrap: anywhere;
+                }
+                .attachment-tag {
+                    margin-left: 6px;
+                    padding: 0 4px;
+                    font-size: 10px;
+                    color: #605e5c;
+                    background-color: #f3f2f1;
+                    border: 1px solid #e1dfdd;
+                    border-radius: 2px;
+                    white-space: nowrap;
                 }
             </style>
         </head>
@@ -220,6 +364,7 @@ function generateEmailHtml(parsedEmail) {
                 <div><strong>To:</strong> ${to} <span class="email-address">(${parsedEmail.to?.value[0]?.address || 'Unknown'})</span></div>
                 <div><strong>Subject:</strong> ${subject}</div>
             </div>
+            ${renderAttachments(parsedEmail)}
             <div class="content">
                 ${htmlContent}
             </div>
@@ -258,6 +403,7 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
             messageId,
             hasHtml: !!parsedEmail.html,
             hasText: !!parsedEmail.text,
+            attachmentCount: (parsedEmail.attachments || []).length,
             from: parsedEmail.from?.text,
             to: parsedEmail.to?.text,
             subject: parsedEmail.subject,
@@ -367,6 +513,7 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         // Log success with full timing breakdown
         logger.info('Successfully transformed email', {
             messageId,
+            attachmentCount: (parsedEmail.attachments || []).length,
             timings: stageTimings,
             screenshotSize: screenshotBuffer.length,
             heightTruncated,
