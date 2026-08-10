@@ -92,6 +92,22 @@ const MAX_SCREENSHOT_HEIGHT = parseInt(process.env.MAX_SCREENSHOT_HEIGHT || '150
 // Offline mode: when enabled, block all outgoing network requests (remote images, fonts, etc.)
 const OFFLINE_MODE = process.env.OFFLINE_MODE === '1';
 
+// Accepts the usual truthy/falsy spellings so the flag behaves the same whether
+// it arrives from the environment or a query string. Anything unrecognised
+// (including undefined) falls back to the caller's default.
+function parseBooleanFlag(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const normalized = String(value).trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
+// Attachment banner: renders the Outlook-style attachment strip above the
+// message body. Off unless enabled, and overridable per request with
+// ?attachment_banner=1 (or =0 to suppress it on an instance that defaults to on).
+const ATTACHMENT_BANNER = parseBooleanFlag(process.env.ATTACHMENT_BANNER, false);
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
@@ -259,7 +275,7 @@ function renderAttachments(parsedEmail) {
 }
 
 // Function to generate HTML from email content
-function generateEmailHtml(parsedEmail) {
+function generateEmailHtml(parsedEmail, { showAttachmentBanner = false } = {}) {
     const messageId = escapeHtml(parsedEmail.messageId || 'Unknown');
     const from = parsedEmail.from?.text || 'Unknown Sender';
     const to = parsedEmail.to?.text || 'Unknown Recipient';
@@ -364,7 +380,7 @@ function generateEmailHtml(parsedEmail) {
                 <div><strong>To:</strong> ${to} <span class="email-address">(${parsedEmail.to?.value[0]?.address || 'Unknown'})</span></div>
                 <div><strong>Subject:</strong> ${subject}</div>
             </div>
-            ${renderAttachments(parsedEmail)}
+            ${showAttachmentBanner ? renderAttachments(parsedEmail) : ''}
             <div class="content">
                 ${htmlContent}
             </div>
@@ -385,7 +401,8 @@ function sanitizeHeaderValue(value) {
 }
 
 // Helper function to process email content
-async function processEmailContent(emailContent, res, requestMetadata = {}) {
+async function processEmailContent(emailContent, res, requestMetadata = {}, options = {}) {
+    const showAttachmentBanner = options.showAttachmentBanner ?? ATTACHMENT_BANNER;
     const overallTimer = createTimer();
     const stageTimings = {};
 
@@ -418,9 +435,9 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         const htmlGenTimer = createTimer();
         const contentType = parsedEmail.html ? 'html' : 'text';
         const contentLength = (parsedEmail.html || parsedEmail.text || '').length;
-        logger.debug('Generating HTML for rendering', { contentType, contentLength });
+        logger.debug('Generating HTML for rendering', { contentType, contentLength, showAttachmentBanner });
 
-        const emailHtml = generateEmailHtml(parsedEmail);
+        const emailHtml = generateEmailHtml(parsedEmail, { showAttachmentBanner });
         stageTimings.htmlGeneration = htmlGenTimer.elapsed();
         logger.debug('HTML generated', {
             generatedHtmlLength: emailHtml.length,
@@ -514,6 +531,7 @@ async function processEmailContent(emailContent, res, requestMetadata = {}) {
         logger.info('Successfully transformed email', {
             messageId,
             attachmentCount: (parsedEmail.attachments || []).length,
+            showAttachmentBanner,
             timings: stageTimings,
             screenshotSize: screenshotBuffer.length,
             heightTruncated,
@@ -554,6 +572,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
     }
 
     const inputFilePath = path.resolve(req.file.path);
+    const showAttachmentBanner = parseBooleanFlag(req.query.attachment_banner, ATTACHMENT_BANNER);
     const requestMetadata = {
         endpoint: '/convert',
         fileName: req.file.originalname,
@@ -565,7 +584,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
 
     try {
         const emailContent = fs.createReadStream(inputFilePath);
-        await processEmailContent(emailContent, res, requestMetadata);
+        await processEmailContent(emailContent, res, requestMetadata, { showAttachmentBanner });
     } finally {
         // Clean up uploaded file
         logger.debug('Cleaning up uploaded file', { filePath: inputFilePath });
@@ -582,6 +601,11 @@ app.post('/convert-api', async (req, res) => {
         return res.status(400).send({ error: 'No .eml content provided.' });
     }
 
+    // Query string wins over the JSON body, which wins over the env default.
+    const showAttachmentBanner = parseBooleanFlag(
+        req.query.attachment_banner,
+        parseBooleanFlag(req.body.attachment_banner, ATTACHMENT_BANNER)
+    );
     const requestMetadata = {
         endpoint: '/convert-api',
         encodedContentLength: eml_content.length
@@ -603,7 +627,7 @@ app.post('/convert-api', async (req, res) => {
         const emailContentStream = new stream.PassThrough();
         emailContentStream.end(decodedContent);
 
-        await processEmailContent(emailContentStream, res, requestMetadata);
+        await processEmailContent(emailContentStream, res, requestMetadata, { showAttachmentBanner });
     } catch (err) {
         logger.error('Error decoding base64 content', {
             error: err.message,
@@ -638,6 +662,7 @@ app.listen(PORT, () => {
         maxFileSizeMB: MAX_FILE_SIZE_MB,
         maxScreenshotHeight: MAX_SCREENSHOT_HEIGHT,
         offlineMode: OFFLINE_MODE,
+        attachmentBanner: ATTACHMENT_BANNER,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
         endpoints: ['/convert', '/convert-api', '/ping', '/health']
