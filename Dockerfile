@@ -1,8 +1,22 @@
-# Use Node.js base image
+# ---- Stage 1: builder ----
+# Installs production dependencies. Puppeteer downloads its bundled Chromium
+# into /root/.cache/puppeteer during npm install; we copy that into the runtime
+# stage so the final image doesn't carry any npm build cruft.
+FROM node:22-slim AS builder
+
+WORKDIR /usr/src/app
+
+COPY package.json .
+RUN npm install --omit=dev
+
+# ---- Stage 2: runtime ----
 FROM node:22-slim
 
-# Install Puppeteer dependencies and necessary fonts
-RUN apt-get update && apt-get install -y \
+# Install Puppeteer dependencies and necessary fonts.
+# --no-install-recommends avoids pulling optional transitive packages, and
+# removing /var/lib/apt/lists in the same layer keeps the layer small (plain
+# `apt-get clean` leaves the ~19MB package lists behind in the image).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libxss1 \
     libasound2 \
@@ -15,17 +29,17 @@ RUN apt-get update && apt-get install -y \
     fonts-dejavu \
     fonts-noto \
     fonts-wqy-zenhei \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /usr/src/app
 
-# Copy package.json and install dependencies
-COPY package.json .
-RUN npm install
+# Bring in production node_modules and the bundled Chromium from the builder.
+COPY --from=builder /usr/src/app/node_modules ./node_modules
+COPY --from=builder /root/.cache/puppeteer /root/.cache/puppeteer
 
 # Bundle app source
-COPY server.js healthcheck.js ./
+COPY package.json server.js healthcheck.js ./
 
 # Expose the port the app runs on
 EXPOSE 5000
