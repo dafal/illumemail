@@ -1,8 +1,11 @@
 # ---- Stage 1: builder ----
-# Installs production dependencies. Puppeteer downloads its bundled Chromium
-# into /root/.cache/puppeteer during npm install; we copy that into the runtime
-# stage so the final image doesn't carry any npm build cruft.
+# Installs production dependencies. We skip Puppeteer's bundled Chromium download
+# (PUPPETEER_SKIP_DOWNLOAD): the bundled build is x86_64-only on this Puppeteer
+# version and won't run on arm64. The runtime stage installs Debian's native
+# `chromium` package instead, which works on both amd64 and arm64.
 FROM node:22-slim AS builder
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /usr/src/app
 
@@ -12,11 +15,13 @@ RUN npm install --omit=dev
 # ---- Stage 2: runtime ----
 FROM node:22-slim
 
-# Install Puppeteer dependencies and necessary fonts.
+# Install Chromium (Debian package works on amd64 and arm64), Puppeteer's shared
+# library dependencies, and necessary fonts.
 # --no-install-recommends avoids pulling optional transitive packages, and
 # removing /var/lib/apt/lists in the same layer keeps the layer small (plain
 # `apt-get clean` leaves the ~19MB package lists behind in the image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
     libnss3 \
     libxss1 \
     libasound2 \
@@ -31,12 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
+# Point Puppeteer at the system Chromium installed above instead of its bundled
+# (x86_64-only) build. server.js reads this via PUPPETEER_LAUNCH_OPTIONS.
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
 # Create app directory
 WORKDIR /usr/src/app
 
-# Bring in production node_modules and the bundled Chromium from the builder.
+# Bring in production node_modules from the builder (no bundled Chromium cache;
+# we use the system chromium installed via apt above).
 COPY --from=builder /usr/src/app/node_modules ./node_modules
-COPY --from=builder /root/.cache/puppeteer /root/.cache/puppeteer
 
 # Bundle app source
 COPY package.json server.js healthcheck.js ./

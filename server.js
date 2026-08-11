@@ -123,6 +123,10 @@ const upload = multer({
 // to disk-backed /tmp and slow rendering. getBrowser() relaunches the browser
 // if it ever does crash, so an undersized /dev/shm degrades instead of wedging.
 const PUPPETEER_LAUNCH_OPTIONS = {
+    // Use the system Chromium when PUPPETEER_EXECUTABLE_PATH is set (the Docker
+    // image points this at /usr/bin/chromium so it works on amd64 and arm64).
+    // When unset (e.g. local dev), fall back to Puppeteer's managed Chromium.
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
