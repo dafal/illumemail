@@ -108,6 +108,13 @@ function parseBooleanFlag(value, fallback) {
 // ?attachment_banner=1 (or =0 to suppress it on an instance that defaults to on).
 const ATTACHMENT_BANNER = parseBooleanFlag(process.env.ATTACHMENT_BANNER, false);
 
+// Whether the banner also lists parts embedded in the HTML body (cid: images
+// such as logos and signature graphics) alongside genuinely attached files.
+// Off by default: those are already visible in the rendered body, and listing
+// them buries the real attachments. Overridable per request with
+// ?attachment_banner_inline=1.
+const ATTACHMENT_BANNER_INLINE = parseBooleanFlag(process.env.ATTACHMENT_BANNER_INLINE, false);
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
@@ -245,18 +252,28 @@ function renderAttachmentIcon(extension) {
     `;
 }
 
-// Outlook-style attachment strip. Attachments referenced from the HTML body
-// (inline images) are still listed but tagged, so nothing in the message is
-// hidden from the analyst.
-function renderAttachments(parsedEmail) {
-    const attachments = parsedEmail.attachments || [];
+// True for parts embedded in the HTML body (a cid: image, typically a logo or
+// signature graphic) rather than genuinely attached files. mailparser sets
+// related on parts the HTML actually references.
+function isInlineAttachment(attachment) {
+    return attachment.related === true || attachment.contentDisposition === 'inline';
+}
+
+// Outlook-style attachment strip. Lists genuinely attached files only; pass
+// includeInline: true to also list parts embedded in the HTML body, which are
+// then tagged so they can be told apart from real attachments.
+function renderAttachments(parsedEmail, { includeInline = false } = {}) {
+    const allAttachments = parsedEmail.attachments || [];
+    const attachments = includeInline
+        ? allAttachments
+        : allAttachments.filter((attachment) => !isInlineAttachment(attachment));
     if (attachments.length === 0) return '';
 
     const items = attachments.map((attachment) => {
         const filename = attachment.filename || 'unnamed attachment';
         const extension = getAttachmentExtension(attachment.filename);
         const size = formatFileSize(attachment.size);
-        const isInline = attachment.related === true || attachment.contentDisposition === 'inline';
+        const isInline = isInlineAttachment(attachment);
 
         return `
             <div class="attachment">
@@ -279,7 +296,7 @@ function renderAttachments(parsedEmail) {
 }
 
 // Function to generate HTML from email content
-function generateEmailHtml(parsedEmail, { showAttachmentBanner = false } = {}) {
+function generateEmailHtml(parsedEmail, { showAttachmentBanner = false, includeInlineAttachments = false } = {}) {
     const messageId = escapeHtml(parsedEmail.messageId || 'Unknown');
     const from = parsedEmail.from?.text || 'Unknown Sender';
     const to = parsedEmail.to?.text || 'Unknown Recipient';
@@ -384,7 +401,7 @@ function generateEmailHtml(parsedEmail, { showAttachmentBanner = false } = {}) {
                 <div><strong>To:</strong> ${to} <span class="email-address">(${parsedEmail.to?.value[0]?.address || 'Unknown'})</span></div>
                 <div><strong>Subject:</strong> ${subject}</div>
             </div>
-            ${showAttachmentBanner ? renderAttachments(parsedEmail) : ''}
+            ${showAttachmentBanner ? renderAttachments(parsedEmail, { includeInline: includeInlineAttachments }) : ''}
             <div class="content">
                 ${htmlContent}
             </div>
@@ -407,6 +424,7 @@ function sanitizeHeaderValue(value) {
 // Helper function to process email content
 async function processEmailContent(emailContent, res, requestMetadata = {}, options = {}) {
     const showAttachmentBanner = options.showAttachmentBanner ?? ATTACHMENT_BANNER;
+    const includeInlineAttachments = options.includeInlineAttachments ?? ATTACHMENT_BANNER_INLINE;
     const overallTimer = createTimer();
     const stageTimings = {};
 
@@ -439,9 +457,14 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
         const htmlGenTimer = createTimer();
         const contentType = parsedEmail.html ? 'html' : 'text';
         const contentLength = (parsedEmail.html || parsedEmail.text || '').length;
-        logger.debug('Generating HTML for rendering', { contentType, contentLength, showAttachmentBanner });
+        logger.debug('Generating HTML for rendering', {
+            contentType,
+            contentLength,
+            showAttachmentBanner,
+            includeInlineAttachments
+        });
 
-        const emailHtml = generateEmailHtml(parsedEmail, { showAttachmentBanner });
+        const emailHtml = generateEmailHtml(parsedEmail, { showAttachmentBanner, includeInlineAttachments });
         stageTimings.htmlGeneration = htmlGenTimer.elapsed();
         logger.debug('HTML generated', {
             generatedHtmlLength: emailHtml.length,
@@ -535,7 +558,9 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
         logger.info('Successfully transformed email', {
             messageId,
             attachmentCount: (parsedEmail.attachments || []).length,
+            inlineAttachmentCount: (parsedEmail.attachments || []).filter(isInlineAttachment).length,
             showAttachmentBanner,
+            includeInlineAttachments,
             timings: stageTimings,
             screenshotSize: screenshotBuffer.length,
             heightTruncated,
@@ -577,6 +602,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
 
     const inputFilePath = path.resolve(req.file.path);
     const showAttachmentBanner = parseBooleanFlag(req.query.attachment_banner, ATTACHMENT_BANNER);
+    const includeInlineAttachments = parseBooleanFlag(req.query.attachment_banner_inline, ATTACHMENT_BANNER_INLINE);
     const requestMetadata = {
         endpoint: '/convert',
         fileName: req.file.originalname,
@@ -588,7 +614,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
 
     try {
         const emailContent = fs.createReadStream(inputFilePath);
-        await processEmailContent(emailContent, res, requestMetadata, { showAttachmentBanner });
+        await processEmailContent(emailContent, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments });
     } finally {
         // Clean up uploaded file
         logger.debug('Cleaning up uploaded file', { filePath: inputFilePath });
@@ -609,6 +635,10 @@ app.post('/convert-api', async (req, res) => {
     const showAttachmentBanner = parseBooleanFlag(
         req.query.attachment_banner,
         parseBooleanFlag(req.body.attachment_banner, ATTACHMENT_BANNER)
+    );
+    const includeInlineAttachments = parseBooleanFlag(
+        req.query.attachment_banner_inline,
+        parseBooleanFlag(req.body.attachment_banner_inline, ATTACHMENT_BANNER_INLINE)
     );
     const requestMetadata = {
         endpoint: '/convert-api',
@@ -631,7 +661,7 @@ app.post('/convert-api', async (req, res) => {
         const emailContentStream = new stream.PassThrough();
         emailContentStream.end(decodedContent);
 
-        await processEmailContent(emailContentStream, res, requestMetadata, { showAttachmentBanner });
+        await processEmailContent(emailContentStream, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments });
     } catch (err) {
         logger.error('Error decoding base64 content', {
             error: err.message,
@@ -667,6 +697,7 @@ app.listen(PORT, () => {
         maxScreenshotHeight: MAX_SCREENSHOT_HEIGHT,
         offlineMode: OFFLINE_MODE,
         attachmentBanner: ATTACHMENT_BANNER,
+        attachmentBannerInline: ATTACHMENT_BANNER_INLINE,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
         endpoints: ['/convert', '/convert-api', '/ping', '/health']
