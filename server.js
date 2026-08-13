@@ -253,10 +253,20 @@ function renderAttachmentIcon(extension) {
 }
 
 // True for parts embedded in the HTML body (a cid: image, typically a logo or
-// signature graphic) rather than genuinely attached files. mailparser sets
-// related on parts the HTML actually references.
-function isInlineAttachment(attachment) {
-    return attachment.related === true || attachment.contentDisposition === 'inline';
+// signature graphic) rather than genuinely attached files.
+//
+// Content-Disposition is the authoritative signal. mailparser's `related` flag
+// is not: Outlook wraps the whole message in multipart/related, so every part
+// of such a message comes back with related === true, including real
+// attachments carrying Content-Disposition: attachment. Trusting it hides
+// genuine attachments, which is exactly what an analyst needs to see.
+//
+// Only when a part declares no disposition at all do we fall back to asking
+// whether the body actually displays it via a cid: reference.
+function isInlineAttachment(attachment, htmlBody = '') {
+    if (attachment.contentDisposition === 'attachment') return false;
+    if (attachment.contentDisposition === 'inline') return true;
+    return Boolean(attachment.cid && htmlBody.includes(attachment.cid));
 }
 
 // Outlook-style attachment strip. Lists genuinely attached files only; pass
@@ -264,16 +274,17 @@ function isInlineAttachment(attachment) {
 // then tagged so they can be told apart from real attachments.
 function renderAttachments(parsedEmail, { includeInline = false } = {}) {
     const allAttachments = parsedEmail.attachments || [];
+    const htmlBody = parsedEmail.html || '';
     const attachments = includeInline
         ? allAttachments
-        : allAttachments.filter((attachment) => !isInlineAttachment(attachment));
+        : allAttachments.filter((attachment) => !isInlineAttachment(attachment, htmlBody));
     if (attachments.length === 0) return '';
 
     const items = attachments.map((attachment) => {
         const filename = attachment.filename || 'unnamed attachment';
         const extension = getAttachmentExtension(attachment.filename);
         const size = formatFileSize(attachment.size);
-        const isInline = isInlineAttachment(attachment);
+        const isInline = isInlineAttachment(attachment, htmlBody);
 
         return `
             <div class="attachment">
@@ -558,7 +569,8 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
         logger.info('Successfully transformed email', {
             messageId,
             attachmentCount: (parsedEmail.attachments || []).length,
-            inlineAttachmentCount: (parsedEmail.attachments || []).filter(isInlineAttachment).length,
+            inlineAttachmentCount: (parsedEmail.attachments || [])
+                .filter((attachment) => isInlineAttachment(attachment, parsedEmail.html || '')).length,
             showAttachmentBanner,
             includeInlineAttachments,
             timings: stageTimings,
