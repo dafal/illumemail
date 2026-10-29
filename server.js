@@ -115,6 +115,147 @@ const ATTACHMENT_BANNER = parseBooleanFlag(process.env.ATTACHMENT_BANNER, false)
 // ?attachment_banner_inline=1.
 const ATTACHMENT_BANNER_INLINE = parseBooleanFlag(process.env.ATTACHMENT_BANNER_INLINE, false);
 
+// Rendering theme: 'light' is the email as a mail client shows it, 'dark' is a
+// dark-mode rendition (see applyDarkModeInPage), and 'both' returns the two from a
+// single page load. Overridable per request with ?theme=dark or ?theme=both.
+const THEMES = ['light', 'dark', 'both'];
+
+// Returns the normalised theme name, or undefined if the value isn't one we
+// know, so callers can decide between falling back and rejecting the request.
+function parseTheme(value) {
+    if (value === undefined || value === null || value === '') return undefined;
+    const normalized = String(value).trim().toLowerCase();
+    return THEMES.includes(normalized) ? normalized : undefined;
+}
+
+const THEME = parseTheme(process.env.THEME) || 'light';
+if (process.env.THEME && parseTheme(process.env.THEME) === undefined) {
+    logger.warn('Unrecognised THEME value, falling back to light', { value: process.env.THEME, accepted: THEMES });
+}
+
+// Dark-mode rendition. Email HTML almost never ships dark-mode styles and
+// Chrome's own auto-dark rendering (Emulation.setAutoDarkModeOverride) is a
+// no-op in headless, so we do what mail clients do: walk the rendered DOM and
+// flip the lightness of every text, background and border colour while
+// keeping its hue, so a blue link stays blue and white becomes black. Images
+// are left untouched; a CSS invert filter would be simpler but it clamps
+// saturated colours, dulling exactly the brand logos an analyst looks for.
+//
+// Text sitting on a background image keeps its colour, since the image it has
+// to stay readable against isn't changing.
+//
+// This runs inside the already-loaded page (via page.evaluate), so a request
+// asking for both themes pays for parsing, layout and image fetching once: the
+// dark capture is just a second screenshot of the same document. Colours don't
+// affect layout, so the dimensions measured for the light capture still hold.
+function applyDarkModeInPage() {
+    const FOREGROUND_PROPERTIES = [
+        'color',
+        'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+        'outline-color', 'text-decoration-color',
+    ];
+
+    const parseColor = (value) => {
+        const match = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(value || '');
+        if (!match) return null;
+        return {
+            r: Number(match[1]) / 255,
+            g: Number(match[2]) / 255,
+            b: Number(match[3]) / 255,
+            a: match[4] === undefined ? 1 : Number(match[4]),
+        };
+    };
+
+    // Same hue and saturation, lightness mirrored around the middle.
+    const flipLightness = ({ r, g, b, a }) => {
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const l = (max + min) / 2;
+        let h = 0;
+        let s = 0;
+        if (max !== min) {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+            else if (max === g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h /= 6;
+        }
+        const nl = 1 - l;
+        const hueToRgb = (p, q, t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        let nr, ng, nb;
+        if (s === 0) {
+            nr = ng = nb = nl;
+        } else {
+            const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
+            const p = 2 * nl - q;
+            nr = hueToRgb(p, q, h + 1 / 3);
+            ng = hueToRgb(p, q, h);
+            nb = hueToRgb(p, q, h - 1 / 3);
+        }
+        const to255 = (v) => Math.round(v * 255);
+        return `rgba(${to255(nr)}, ${to255(ng)}, ${to255(nb)}, ${a})`;
+    };
+
+    // Read every computed colour before writing any: colour is inherited, so
+    // recolouring a parent first would make its children read the already
+    // flipped value and flip it straight back.
+    const elements = Array.from(document.querySelectorAll('*'));
+    const snapshots = elements.map((element) => {
+        const style = getComputedStyle(element);
+        return {
+            element,
+            background: parseColor(style.backgroundColor),
+            hasImageBackground: style.backgroundImage !== 'none',
+            foreground: FOREGROUND_PROPERTIES.map((property) => [property, parseColor(style.getPropertyValue(property))]),
+        };
+    });
+
+    // Nearest painted background for each element: 'image', 'solid' or null.
+    // querySelectorAll walks in document order, so parents are seen first.
+    const backgroundKind = new Map();
+    let adjusted = 0;
+
+    for (const { element, background, hasImageBackground, foreground } of snapshots) {
+        const hasSolidBackground = background !== null && background.a > 0;
+
+        let kind = null;
+        if (hasImageBackground) kind = 'image';
+        else if (hasSolidBackground) kind = 'solid';
+        else if (element.parentElement) kind = backgroundKind.get(element.parentElement) || null;
+        backgroundKind.set(element, kind);
+
+        if (hasSolidBackground && !hasImageBackground) {
+            element.style.setProperty('background-color', flipLightness(background), 'important');
+            adjusted += 1;
+        }
+
+        if (kind === 'image') continue;
+
+        for (const [property, color] of foreground) {
+            if (color === null || color.a === 0) continue;
+            element.style.setProperty(property, flipLightness(color), 'important');
+            adjusted += 1;
+        }
+    }
+
+    // With no background anywhere the canvas is white; make it black.
+    const rootBackground = parseColor(getComputedStyle(document.documentElement).backgroundColor);
+    const bodyBackground = document.body && parseColor(getComputedStyle(document.body).backgroundColor);
+    if ((!rootBackground || rootBackground.a === 0) && (!bodyBackground || bodyBackground.a === 0)) {
+        document.documentElement.style.setProperty('background-color', '#000', 'important');
+    }
+
+    return adjusted;
+}
+
 // Multer configuration for file uploads
 const upload = multer({
     dest: 'uploads/',
@@ -432,10 +573,39 @@ function sanitizeHeaderValue(value) {
     return value;
 }
 
+// Screenshots the loaded page as JPEG, clipping it to MAX_SCREENSHOT_HEIGHT
+// when the document is taller than that.
+async function captureScreenshot(page, dimensions, messageId) {
+    if (dimensions.height > MAX_SCREENSHOT_HEIGHT) {
+        logger.warn('Page height exceeds maximum, screenshot will be truncated', {
+            actualHeight: dimensions.height,
+            maxHeight: MAX_SCREENSHOT_HEIGHT,
+            messageId
+        });
+
+        logger.debug('Taking truncated screenshot');
+        const buffer = await page.screenshot({
+            type: 'jpeg',
+            clip: {
+                x: 0,
+                y: 0,
+                width: dimensions.width,
+                height: MAX_SCREENSHOT_HEIGHT
+            }
+        });
+        return { buffer, heightTruncated: true };
+    }
+
+    logger.debug('Taking full page screenshot');
+    const buffer = await page.screenshot({ type: 'jpeg', fullPage: true });
+    return { buffer, heightTruncated: false };
+}
+
 // Helper function to process email content
 async function processEmailContent(emailContent, res, requestMetadata = {}, options = {}) {
     const showAttachmentBanner = options.showAttachmentBanner ?? ATTACHMENT_BANNER;
     const includeInlineAttachments = options.includeInlineAttachments ?? ATTACHMENT_BANNER_INLINE;
+    const theme = options.theme ?? THEME;
     const overallTimer = createTimer();
     const stageTimings = {};
 
@@ -472,7 +642,8 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
             contentType,
             contentLength,
             showAttachmentBanner,
-            includeInlineAttachments
+            includeInlineAttachments,
+            theme
         });
 
         const emailHtml = generateEmailHtml(parsedEmail, { showAttachmentBanner, includeInlineAttachments });
@@ -523,37 +694,37 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
             maxHeight: MAX_SCREENSHOT_HEIGHT
         });
 
-        // Check if page height exceeds maximum
-        let screenshotBuffer;
+        // Capture the requested theme(s). Both come from this one page load:
+        // the dark rendition only recolours the DOM, it never reloads.
+        const screenshots = {};
         let heightTruncated = false;
 
-        if (dimensions.height > MAX_SCREENSHOT_HEIGHT) {
-            logger.warn('Page height exceeds maximum, screenshot will be truncated', {
-                actualHeight: dimensions.height,
-                maxHeight: MAX_SCREENSHOT_HEIGHT,
-                messageId
-            });
+        if (theme === 'light' || theme === 'both') {
+            const captureTimer = createTimer();
+            const capture = await captureScreenshot(page, dimensions, messageId);
+            screenshots.light = capture.buffer;
+            heightTruncated = capture.heightTruncated;
+            stageTimings.screenshotLight = captureTimer.elapsed();
+        }
 
-            logger.debug('Taking truncated screenshot');
-            screenshotBuffer = await page.screenshot({
-                type: 'jpeg',
-                clip: {
-                    x: 0,
-                    y: 0,
-                    width: dimensions.width,
-                    height: MAX_SCREENSHOT_HEIGHT
-                }
-            });
-            heightTruncated = true;
-        } else {
-            logger.debug('Taking full page screenshot');
-            screenshotBuffer = await page.screenshot({ type: 'jpeg', fullPage: true });
+        if (theme === 'dark' || theme === 'both') {
+            const captureTimer = createTimer();
+            const adjustedElements = await page.evaluate(applyDarkModeInPage);
+            logger.debug('Applied dark mode to page', { adjustedElements });
+            const capture = await captureScreenshot(page, dimensions, messageId);
+            screenshots.dark = capture.buffer;
+            heightTruncated = capture.heightTruncated;
+            stageTimings.screenshotDark = captureTimer.elapsed();
         }
 
         stageTimings.rendering = renderTimer.elapsed();
 
+        const screenshotSizes = Object.fromEntries(
+            Object.entries(screenshots).map(([name, buffer]) => [name, buffer.length])
+        );
         logger.debug('Screenshot captured', {
-            screenshotSize: screenshotBuffer.length,
+            theme,
+            screenshotSizes,
             duration_ms: stageTimings.rendering,
             heightTruncated,
             capturedHeight: heightTruncated ? MAX_SCREENSHOT_HEIGHT : dimensions.height
@@ -573,8 +744,9 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
                 .filter((attachment) => isInlineAttachment(attachment, parsedEmail.html || '')).length,
             showAttachmentBanner,
             includeInlineAttachments,
+            theme,
             timings: stageTimings,
-            screenshotSize: screenshotBuffer.length,
+            screenshotSizes,
             heightTruncated,
             pageHeight: dimensions.height,
             ...requestMetadata
@@ -590,9 +762,20 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
             res.setHeader('X-Captured-Height', MAX_SCREENSHOT_HEIGHT.toString());
         }
 
+        res.setHeader('X-Email-Theme', theme);
+
+        if (theme === 'both') {
+            // Two images can't share one image/jpeg body, so return them
+            // base64-encoded in a JSON object.
+            return res.json({
+                light: screenshots.light.toString('base64'),
+                dark: screenshots.dark.toString('base64')
+            });
+        }
+
         // Send the JPEG as the response
         res.setHeader('Content-Type', 'image/jpeg');
-        res.send(screenshotBuffer);
+        res.send(screenshots[theme]);
     } catch (err) {
         stageTimings.total = overallTimer.elapsed();
         logger.error('Error processing email content', {
@@ -605,6 +788,14 @@ async function processEmailContent(emailContent, res, requestMetadata = {}, opti
     }
 }
 
+// Theme for one request: the instance default when none was given, the parsed
+// value when it's valid, and undefined (so the endpoint can reject it) when
+// the caller asked for something we don't know.
+function resolveRequestTheme(value) {
+    if (value === undefined || value === null || value === '') return THEME;
+    return parseTheme(value);
+}
+
 // Endpoint to handle .eml file uploads and convert to JPEG
 app.post('/convert', upload.single('eml_file'), async (req, res) => {
     if (!req.file) {
@@ -615,6 +806,7 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
     const inputFilePath = path.resolve(req.file.path);
     const showAttachmentBanner = parseBooleanFlag(req.query.attachment_banner, ATTACHMENT_BANNER);
     const includeInlineAttachments = parseBooleanFlag(req.query.attachment_banner_inline, ATTACHMENT_BANNER_INLINE);
+    const theme = resolveRequestTheme(req.query.theme);
     const requestMetadata = {
         endpoint: '/convert',
         fileName: req.file.originalname,
@@ -625,8 +817,12 @@ app.post('/convert', upload.single('eml_file'), async (req, res) => {
     logger.info('Received file upload request', requestMetadata);
 
     try {
+        if (!theme) {
+            logger.warn('Unrecognised theme requested', { value: req.query.theme, ...requestMetadata });
+            return res.status(400).send({ error: `Unknown theme. Accepted values: ${THEMES.join(', ')}.` });
+        }
         const emailContent = fs.createReadStream(inputFilePath);
-        await processEmailContent(emailContent, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments });
+        await processEmailContent(emailContent, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments, theme });
     } finally {
         // Clean up uploaded file
         logger.debug('Cleaning up uploaded file', { filePath: inputFilePath });
@@ -652,12 +848,19 @@ app.post('/convert-api', async (req, res) => {
         req.query.attachment_banner_inline,
         parseBooleanFlag(req.body.attachment_banner_inline, ATTACHMENT_BANNER_INLINE)
     );
+    const requestedTheme = req.query.theme ?? req.body.theme;
+    const theme = resolveRequestTheme(requestedTheme);
     const requestMetadata = {
         endpoint: '/convert-api',
         encodedContentLength: eml_content.length
     };
 
     logger.info('Received API request with base64 content', requestMetadata);
+
+    if (!theme) {
+        logger.warn('Unrecognised theme requested', { value: requestedTheme, ...requestMetadata });
+        return res.status(400).send({ error: `Unknown theme. Accepted values: ${THEMES.join(', ')}.` });
+    }
 
     try {
         // Decode base64-encoded content
@@ -673,7 +876,7 @@ app.post('/convert-api', async (req, res) => {
         const emailContentStream = new stream.PassThrough();
         emailContentStream.end(decodedContent);
 
-        await processEmailContent(emailContentStream, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments });
+        await processEmailContent(emailContentStream, res, requestMetadata, { showAttachmentBanner, includeInlineAttachments, theme });
     } catch (err) {
         logger.error('Error decoding base64 content', {
             error: err.message,
@@ -710,6 +913,7 @@ app.listen(PORT, () => {
         offlineMode: OFFLINE_MODE,
         attachmentBanner: ATTACHMENT_BANNER,
         attachmentBannerInline: ATTACHMENT_BANNER_INLINE,
+        theme: THEME,
         logLevel: LOG_LEVEL,
         logFormat: LOG_FORMAT,
         endpoints: ['/convert', '/convert-api', '/ping', '/health']
