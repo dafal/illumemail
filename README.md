@@ -9,6 +9,7 @@ Illumemail is a lightweight Node.js-based service that converts `.eml` email fil
 - Parse and render `.eml` files into visually accurate JPEG images.
 - Includes essential email metadata such as `Message-ID`, `From`, `To`, and `Subject` in the rendered image.
 - Optionally renders an Outlook-style attachment strip above the message body, showing each attachment's file-type icon, name, size, and declared MIME type (no file contents are previewed). Images embedded in the message body are excluded by default, so only genuine attachments are listed. Off by default; enable with `ATTACHMENT_BANNER=1` or per request with `?attachment_banner=1`.
+- Optionally renders a dark-mode version of the email, with text, backgrounds and borders flipped to dark and images left exactly as they are. Ask for `?theme=dark`, or `?theme=both` to get the light and dark renders from a single page load (images are fetched once).
 - Fully Dockerized for easy deployment.
 - Security-focused, running as a non-root user inside the container.
 
@@ -64,7 +65,21 @@ EOF
 ```
 **Response**
 - On success, the service returns the rendered JPEG image as the response.
-- Metadata such as Message-ID, Subject, and From are included as HTTP response headers.
+- Metadata such as Message-ID, Subject, and From are included as HTTP response headers. `X-Email-Theme` names the theme that was rendered.
+- With `theme=both` the response is JSON instead, holding both renders as base64-encoded JPEGs: `{"light": "...", "dark": "..."}`.
+
+**Dark mode**
+
+```bash
+# Dark-mode render only
+curl -X POST -F "eml_file=@sample.eml" "http://localhost:5000/convert?theme=dark" --output dark.jpeg
+
+# Light and dark from one render; images are loaded once
+curl -X POST -F "eml_file=@sample.eml" "http://localhost:5000/convert?theme=both" \
+  | jq -r '.dark' | base64 -d > dark.jpeg
+```
+
+The dark render is produced from the same loaded page as the light one: after the light screenshot the service recolours the rendered DOM in place (flipping the lightness of text, background and border colours while keeping their hue) and takes a second screenshot. Nothing is reloaded, so remote images, fonts and tracking pixels are requested exactly once per conversion. Images themselves are never altered, so logos and screenshots keep their original colours. Text placed on a background image keeps its original colour too, since the image it has to stay readable against does not change.
 **Environment Variables**
 
 | Variable | Default | Description |
@@ -77,15 +92,17 @@ EOF
 | OFFLINE_MODE | 0 | When set to `1`, blocks all outgoing network requests during rendering (remote images, fonts, tracking pixels, etc. will not be loaded). |
 | ATTACHMENT_BANNER | 0 | When set to `1`, renders the attachment strip above the message body. Off by default; can be overridden per request (see below). |
 | ATTACHMENT_BANNER_INLINE | 0 | When set to `1`, the banner also lists parts embedded in the HTML body (`cid:` images such as logos and signature graphics), tagged `inline`. By default only genuinely attached files are listed. |
+| THEME | light | Default rendering theme: `light`, `dark`, or `both` (JSON response with both renders). Can be overridden per request (see below). |
 
 **Per-request overrides**
 
-Both attachment settings can be changed for a single request with a query parameter, which takes precedence over the environment variable. Accepted values are `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
+The attachment settings and the theme can be changed for a single request with a query parameter, which takes precedence over the environment variable. Accepted values for the boolean flags are `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
 
 | Parameter | Effect |
 | --------- | ------ |
 | `attachment_banner` | `1` renders the banner, `0` suppresses it. |
 | `attachment_banner_inline` | `1` also lists inline `cid:` parts (tagged `inline`), `0` lists only real attachments. |
+| `theme` | `light`, `dark`, or `both`. Any other value is rejected with HTTP 400. |
 
 ```bash
 # Enable the banner on an instance that has it off
@@ -97,7 +114,7 @@ curl -X POST -F "eml_file=@sample.eml" "http://localhost:5000/convert?attachment
 
 If a message carries only inline parts, no banner is rendered unless `attachment_banner_inline=1`.
 
-`/convert-api` accepts the same query parameters, and also `attachment_banner` and `attachment_banner_inline` fields in the JSON body (the query parameter wins if both are given).
+`/convert-api` accepts the same query parameters, and also `attachment_banner`, `attachment_banner_inline` and `theme` fields in the JSON body (the query parameter wins if both are given).
 
 ## Development
 To run the application locally:
